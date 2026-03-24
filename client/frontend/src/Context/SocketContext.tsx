@@ -23,13 +23,21 @@ export const SocketProvider: React.FC<Props> = ({ children }) => {
 
     // state varible to store the userId
     const [user, setUser] = useState<Peer>(); // new peer user
-    
+    const [stream, setStream] = useState<MediaStream>();
+
+    const fetchUserFeed = async () => {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true});
+        setStream(stream);
+    }
+
     useEffect(() => {
 
         const userId = UUIDv4(); // generating a unique user id using uuid
         const newPeer = new Peer(userId);
 
         setUser(newPeer);
+
+        fetchUserFeed();
 
         const enterRoom = ({ roomId } : { roomId: String }) => {
             navigate(`/room/${roomId}`);
@@ -40,7 +48,7 @@ export const SocketProvider: React.FC<Props> = ({ children }) => {
     }, []);
 
     return (
-        <SocketContext.Provider value={{ socket, user }}>
+        <SocketContext.Provider value={{ socket, user, stream }}>
             {children}
         </SocketContext.Provider>
     );
