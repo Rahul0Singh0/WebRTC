@@ -1,3 +1,10 @@
+## Use local peerjs server
+``` cmd
+npm install peer -g
+
+peerjs --port 9000 --path /myapp
+```
+
 ![WebRTC](./images/image.png)
 
 ## Free turn server to use in own project
