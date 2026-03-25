@@ -47,7 +47,7 @@ export const SocketProvider: React.FC<Props> = ({ children }) => {
             port: 9000,
             path: "/myapp"
         });
-
+        
         setUser(newPeer);
 
         fetchUserFeed();
@@ -67,7 +67,7 @@ export const SocketProvider: React.FC<Props> = ({ children }) => {
             return;
         }
 
-        socket.on("user-joined", (peerId) => {
+        socket.on("user-joined", ({peerId}) => {
             const call = user.call(peerId, stream);
             console.log("Calling the new peer", peerId);
             call.on("stream", () => {
