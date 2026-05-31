@@ -1,12 +1,13 @@
 import SocketIoClient from "socket.io-client";
-import { createContext, useEffect, useReducer, useState } from "react";
+import { createContext, useEffect, useReducer, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import Peer from "peerjs";
-import { v4 as UUIDv4 } from "uuid"; 
-import { peerReducer } from "../Reducers/peerReducer";
-import { addPeerAction } from "../Actions/peerAction";
+import type { MediaConnection } from "peerjs";
+import { v4 as UUIDv4 } from "uuid";
+import { peerReducer, RESET } from "../Reducers/peerReducer";
+import { addPeerAction, removePeerAction } from "../Actions/peerAction";
 
-const WS_Server = "http://localhost:5500";
+const WS_Server = import.meta.env.VITE_WS_SERVER || "http://localhost:3000";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const SocketContext = createContext<any | null>(null);
@@ -26,69 +27,187 @@ export const SocketProvider: React.FC<Props> = ({ children }) => {
     // state varible to store the userId
     const [user, setUser] = useState<Peer>(); // new peer user
     const [stream, setStream] = useState<MediaStream>();
-
+    const streamRef = useRef<MediaStream | null>(null);
     const [peers, dispatch] = useReducer(peerReducer, {}); // peers->state
+    const [socketId, setSocketId] = useState<string>("");
 
-    const fetchParticipantList = ({roomId, participants}: {roomId: string, participants: string[]}) => {
+    useEffect(() => {
+        const handleConnect = () => {
+            setSocketId(socket.id || "");
+        };
+
+        if (socket.connected) {
+            setSocketId(socket.id || "");
+        }
+
+        socket.on("connect", handleConnect);
+        return () => {
+            socket.off("connect", handleConnect);
+        };
+    }, []);
+
+    // Mute and Camera states
+    const [isMuted, setIsMuted] = useState(false);
+    const [isCameraOff, setIsCameraOff] = useState(false);
+
+    const toggleMute = () => {
+        if (stream) {
+            stream.getAudioTracks().forEach(track => {
+                track.enabled = !track.enabled;
+            });
+            setIsMuted(prev => !prev);
+        }
+    };
+
+    const toggleCamera = () => {
+        if (stream) {
+            stream.getVideoTracks().forEach(track => {
+                track.enabled = !track.enabled;
+            });
+            setIsCameraOff(prev => !prev);
+        }
+    };
+
+    const fetchParticipantList = ({ roomId, participants }: { roomId: string, participants: string[] }) => {
         console.log("Fetched room participants");
         console.log(roomId, participants);
     }
 
-    const fetchUserFeed = async () => {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true});
-        setStream(stream);
-    }
+    const startUserFeed = useCallback(async () => {
+        if (streamRef.current) {
+            return;
+        }
+        try {
+            const mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            streamRef.current = mediaStream;
+            setStream(mediaStream);
+            setIsMuted(false);
+            setIsCameraOff(false);
+        } catch (error) {
+            console.error("Error accessing user media devices:", error);
+        }
+    }, []);
 
     useEffect(() => {
-
         const userId = UUIDv4(); // generating a unique user id using uuid
-        const newPeer = new Peer(userId, {
-            host: "localhost",
-            port: 9000,
-            path: "/myapp"
-        });
-        
-        setUser(newPeer);
+        let peerInstance: Peer | null = null;
 
-        fetchUserFeed();
+        const initializePeer = (useLocal: boolean) => {
+            const config = useLocal 
+                ? { host: "localhost", port: 9000, path: "/myapp" }
+                : undefined; // Default config falls back to PeerJS Cloud Server
+            
+            console.log(`Initializing PeerJS (${useLocal ? 'local' : 'cloud'} server)...`);
+            const peer = new Peer(userId, config);
 
-        const enterRoom = ({ roomId } : { roomId: String }) => {
+            peer.on("open", (id) => {
+                console.log("PeerJS connection opened successfully with ID:", id);
+                setUser(peer);
+            });
+
+            peer.on("error", (err) => {
+                console.error("PeerJS connection error:", err);
+                
+                // If local server is not running and we haven't tried cloud fallback yet, trigger it
+                if (useLocal && (err.type === "server-error" || err.message.includes("Lost connection") || err.message.includes("Could not connect") || err.message.includes("connection error"))) {
+                    console.warn("Local PeerJS server is unavailable. Falling back to PeerJS Cloud Server...");
+                    peer.destroy();
+                    initializePeer(false);
+                }
+            });
+
+            peerInstance = peer;
+        };
+
+        initializePeer(true); // Try local first
+
+        const enterRoom = ({ roomId }: { roomId: String }) => {
             navigate(`/room/${roomId}`);
         }
 
         // we will transfer the user to the room when we collect an event of "room-created" from server
         socket.on("room-created", enterRoom);
-
         socket.on("get-users", fetchParticipantList);
+
+        return () => {
+            socket.off("room-created", enterRoom);
+            socket.off("get-users", fetchParticipantList);
+            if (peerInstance) {
+                (peerInstance as Peer).destroy();
+            }
+        };
     }, []);
 
     useEffect(() => {
-        if(!user || !stream) {
+        if (!user || !stream) {
             return;
         }
 
-        socket.on("user-joined", ({peerId}) => {
-            const call = user.call(peerId, stream);
+        const handleUserJoined = ({ peerId }: { peerId: string }) => {
             console.log("Calling the new peer", peerId);
-            call.on("stream", () => {
-                dispatch(addPeerAction(peerId, stream));
+            const call = user.call(peerId, stream);
+            call.on("stream", (remoteStream: MediaStream) => {
+                dispatch(addPeerAction(peerId, remoteStream));
             });
-        });
+        };
 
-        user.on("call", (call) => {
-            // what to do when other peers on the group call you when you joined
-            console.log("receiving a call");
+        const handleCall = (call: MediaConnection) => {
+            console.log("receiving a call from peer:", call.peer);
             call.answer(stream);
-            call.on("stream", () => {
-                dispatch(addPeerAction(call.peer, stream));
+            call.on("stream", (remoteStream: MediaStream) => {
+                dispatch(addPeerAction(call.peer, remoteStream));
             });
-        });
+        };
+
+        const handleUserDisconnected = ({ peerId }: { peerId: string }) => {
+            console.log("Peer disconnected:", peerId);
+            dispatch(removePeerAction(peerId));
+        };
+
+        socket.on("user-joined", handleUserJoined);
+        socket.on("user-disconnected", handleUserDisconnected);
+        user.on("call", handleCall);
 
         socket.emit("ready");
+
+        return () => {
+            socket.off("user-joined", handleUserJoined);
+            socket.off("user-disconnected", handleUserDisconnected);
+            user.off("call", handleCall);
+        };
     }, [user, stream]);
 
+    const leaveRoom = useCallback(() => {
+        socket.emit("leave-room");
+
+        if (streamRef.current) {
+            streamRef.current.getTracks().forEach(track => {
+                track.stop();
+                console.log(`Stopped track: ${track.kind}`);
+            });
+            streamRef.current = null;
+        }
+        setStream(undefined);
+
+        dispatch({ type: RESET });
+        setIsMuted(false);
+        setIsCameraOff(false);
+    }, []);
+
     return (
-        <SocketContext.Provider value={{ socket, user, stream, peers }}>
+        <SocketContext.Provider value={{ 
+            socket, 
+            socketId,
+            user, 
+            stream, 
+            peers, 
+            isMuted, 
+            isCameraOff, 
+            toggleMute, 
+            toggleCamera,
+            startUserFeed,
+            leaveRoom
+        }}>
             {children}
         </SocketContext.Provider>
     );

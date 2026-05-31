@@ -9,6 +9,8 @@ import type IRoomParams from "../interfaces/IRoomParams";
 const rooms: Record<string, string[]> = {};
 
 const roomHandler = (socket: Socket) => {
+    let joinedRoomId: string | null = null;
+    let joinedPeerId: string | null = null;
 
     const createRoom = () => {
         const roomId = uuidv4(); // this will be our unique room ID in which multiple connection will exchange data
@@ -26,25 +28,50 @@ const roomHandler = (socket: Socket) => {
      */
     const joinRoom = ({ roomId, peerId }: IRoomParams) => {
         if (rooms[roomId]) {
+            joinedRoomId = roomId;
+            joinedPeerId = peerId;
+
             // if the given roomId exist in the in memory db
             console.log("New user has joined room ", roomId, " with peer ID as ", peerId);
-            // the moment new user joins, add the peerId to the room
-            rooms[roomId].push(peerId);
+
+            // avoid duplicate entries
+            if (!rooms[roomId].includes(peerId)) {
+                rooms[roomId].push(peerId);
+            }
+
             console.log("added peer to room", rooms);
             socket.join(roomId); // make the user join the socket room
 
-            // whenever anyone joins the room
-            socket.on("ready", () => {
-                // from the frontend once someone joins the room we will emit a ready event
-                // then from our server we will emit an event to all the clients conn that a new peer has added
-                socket.to(roomId).emit("user-joined", {peerId});
-            });
-
             // below event is for logging purpose
-            socket.emit("get-users", {roomId, participants: rooms[roomId]});
+            socket.emit("get-users", { roomId, participants: rooms[roomId] });
+        } else {
+            console.log(`Attempt to join non-existent room: ${roomId} by peer ID: ${peerId}`);
         }
-        console.log("New user has joined room", roomId, "with peer ID", peerId);
-        console.log("Added peer to room ", rooms);
+    };
+
+    const leaveRoom = () => {
+        if (joinedRoomId && joinedPeerId) {
+            const roomParticipants = rooms[joinedRoomId];
+            if (roomParticipants) {
+                // Remove the peer from the room list
+                const updatedParticipants = roomParticipants.filter((id) => id !== joinedPeerId);
+                rooms[joinedRoomId] = updatedParticipants;
+
+                // Notify other peers in the room that this user has left
+                socket.to(joinedRoomId).emit("user-disconnected", { peerId: joinedPeerId });
+
+                console.log(`User ${joinedPeerId} left room ${joinedRoomId}`);
+
+                // If room is empty, delete it to prevent memory leak
+                if (updatedParticipants.length === 0) {
+                    delete rooms[joinedRoomId];
+                    console.log(`Room ${joinedRoomId} is now empty and has been deleted.`);
+                }
+            }
+
+            joinedRoomId = null;
+            joinedPeerId = null;
+        }
     };
 
     // When to call the above functions
@@ -52,6 +79,14 @@ const roomHandler = (socket: Socket) => {
     // We will call the above two functions when the client will emit events top create room and join room
     socket.on("create-room", createRoom);
     socket.on("join-room", joinRoom);
+    socket.on("ready", () => {
+        if (joinedRoomId && joinedPeerId) {
+            // from our server we will emit an event to all the clients conn that a new peer has added
+            socket.to(joinedRoomId).emit("user-joined", { peerId: joinedPeerId });
+        }
+    });
+    socket.on("leave-room", leaveRoom);
+    socket.on("disconnect", leaveRoom);
 };
 
 export default roomHandler;

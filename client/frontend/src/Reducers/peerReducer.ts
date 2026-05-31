@@ -1,17 +1,21 @@
 import { ADD_PEER, REMOVE_PEER } from "../Actions/peerAction";
 
-export type PeerState = Record<string, {stream: MediaStream}>;
+export const RESET = "RESET" as const;
+
+export type PeerState = Record<string, { stream: MediaStream }>;
 
 type PeerAction = {
     type: typeof ADD_PEER,
-    payload: {peerId: string, stream: MediaStream}
+    payload: { peerId: string, stream: MediaStream }
 } | {
     type: typeof REMOVE_PEER,
-    payload: {peerId: string}
+    payload: { peerId: string }
+} | {
+    type: typeof RESET
 }
 
 export const peerReducer = (state: PeerState, action: PeerAction) => {
-    switch(action.type) {
+    switch (action.type) {
         case ADD_PEER:
             return {
                 ...state,
@@ -19,10 +23,14 @@ export const peerReducer = (state: PeerState, action: PeerAction) => {
                     stream: action.payload.stream
                 }
             }
-        case REMOVE_PEER:
+        case REMOVE_PEER: {
             // removing a peer
-            // TODO: you can try to write logic to remove a peer
-            return { ...state };
+            const copy = { ...state };
+            delete copy[action.payload.peerId];
+            return copy;
+        }
+        case RESET:
+            return {};
         default:
             return { ...state };
     }
